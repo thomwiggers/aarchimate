@@ -2,7 +2,7 @@
 Defines the instructions and macros for the program
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Set, Optional, Iterable
 import re
 
 write = print
@@ -20,13 +20,17 @@ def vector_to_typed_vector(name: str, type: str='8b') -> str:
 class Register(object):
     names: Dict[str, List[str]] = {'x': [f'x{i}' for i in range(0, 32)],
                                    'v': [f'q{i}' for i in range(0, 32)]}
-    __loaded: List['Register'] = []
-    __stored: List['Register'] = []
+    __loaded: Set['Register'] = set()
+    __stored: Set['Register'] = set()
     name: str
     type: str
     offset: Optional[int]
     pointer: Optional['Register']
     register_name: Optional[str]
+    stack_pointer: 'Register'
+    latency: int
+    cycles: int = 0
+    last_instruction: str = 'jmp'
 
     def __init__(self,
                  name: str,
@@ -41,27 +45,81 @@ class Register(object):
         self.type = type
         self.pointer = pointer
         self.offset = offset
+        self.latency = 0
 
     def __str__(self) -> str:
         return f"Register {self.name}"
 
     def __check_registers(self) -> None:
-        if len(self.__loaded) >= 32:
-            raise Exception("Too many registers loaded: f{self.__loaded}")
+        if len([r for r in self.__loaded if r.type == 'x']) >= 32:
+            raise Exception("Too many regular registers loaded: "
+                            "f{self.__loaded}")
+        if len([r for r in self.__loaded if r.type == 'v']) >= 32:
+            raise Exception("Too many vector registers loaded: "
+                            "f{self.__loaded}")
 
     def load(self) -> None:
         if self not in self.__stored:
-            raise Exception("Register {src!s} is not stored!")
+            raise Exception(f"Register {self!s} is not stored!")
         if self.pointer is None:
             raise Exception("I don't have a pointer")
         if self.pointer not in self.__loaded:
             raise Exception(
-                "Register {self!s}'s pointer {self.pointer!s} isn't loaded")
+                f"Register {self!s}'s pointer {self.pointer!s} isn't loaded")
         reg = self._get_free_name()
+        write(f"// Loading {self.name}")
         if self.offset is not None:
             write(f"ldr {reg}, [{self.pointer.register_name}, #{self.offset}]")
         else:
             write(f"ldr {reg}, [{self.pointer.register_name}]")
+        self.__loaded.add(self)
+        if self.last_instruction == 'load':
+            self.cycles += 1
+            write(f"// WARNING: pipeline hazard")
+
+        self.latency = 1
+        Register.last_instruction = "load"
+        Register._tick()
+
+    def store(self, pointer: 'Register' = None, offset: int = None) -> None:
+        if pointer is not None:
+            self.pointer = pointer
+        if offset is not None:
+            self.offset = offset
+        if self.pointer is None or self.pointer.register_name is None:
+            raise Exception("Where should I be stored?!")
+        if self not in self.__loaded:
+            raise Exception("I'm not even loaded!")
+        if self.register_name is None:
+            raise Exception("Huh, I don't have a register")
+
+        if self.last_instruction == 'load':
+            self.cycles += 1
+            write(f"// WARNING: pipeline hazard")
+
+        p = self.pointer.register_name
+        write(f"// Storing {self.name}")
+        if self.offset is not None:
+            write(f"str {self.register_name}, [{p}, #{self.offset}]")
+        else:
+            write(f"str {self.register_name}, [{p}]")
+        self.__stored.add(self)
+        Register.last_instruction = 'load'
+        self._tick()
+
+    def store_from(self, register: 'Register') -> None:
+        """Store a value from another register under self's name
+
+        Uses this register's pointer
+        """
+        write(f"// Storing {self.name} via {register.name}")
+        register.store(self.pointer, self.offset)
+
+    def unload(self) -> None:
+        if self not in self.__loaded:
+            raise Exception("I'm not even loaded!")
+        write(f"// Forgetting {self.name}")
+        self.__loaded.remove(self)
 
     def and_(self, i1: 'Register', i2: 'Register') -> None:
         self._operand('and', i1, i2)
@@ -71,17 +129,33 @@ class Register(object):
 
     def _operand(self, operator: str, i1: 'Register', i2: 'Register') -> None:
         if i1 not in self.__loaded:
-            raise Exception("Input {i1!s} isn't loaded!")
+            raise Exception(f"Input {i1!s} isn't loaded!")
         if i2 not in self.__loaded:
-            raise Exception("Input {i2!s} isn't loaded!")
+            raise Exception(f"Input {i2!s} isn't loaded!")
         if i1.type != i2.type:
             raise Exception("Inputs should be of the same type")
 
+        if i1.latency > 0 or i2.latency > 0:
+            self.cycles += max(i1.latency, i2.latency)
+            write(f"// WARNING: latency of {max(i1.latency, i2.latency)}")
+
         reg = self._get_free_name()
+        write(f"// {self.name} = {i1.name} `{operator}` {i2.name}")
         write(f"{operator} {reg}, {i1.register_name}, {i2.register_name}")
+        self.__loaded.add(self)
+        self._tick()
+        Register.last_instruction = 'op'
+        self.latency = 1
 
     def store_register(self) -> None:
         raise Exception("Todo")
+
+    @classmethod
+    def _tick(cls) -> None:
+        for r in cls.__loaded:
+            if r.latency > 0:
+                r.latency -= 1
+        cls.cycles += 1
 
     def _get_free_name(self) -> str:
         if self.register_name is not None:
@@ -98,20 +172,42 @@ class Register(object):
 
     @classmethod
     def reset(cls) -> None:
-        cls.__loaded = []
-        cls.__stored = []
+        cls.__loaded = set()
+        cls.__stored = set()
 
     @classmethod
-    def _prepare(cls, inputs: List['Register'],
-                 stored: List['Register']) -> None:
+    def get(cls, name: str) -> 'Register':
+        for i in (cls.__loaded.union(cls.__stored)):
+            if i.name == name:
+                return i
+        raise Exception(f"Register {name} not found")
+
+    @classmethod
+    def _prepare(cls, inputs: Iterable['Register'],
+                 stored: Iterable['Register']) -> None:
         assert not cls.__loaded, "Still loaded registers! Reset first"
         assert not cls.__stored, "Still stored registers! Reset first"
         for i in inputs:
             if i.register_name is None:
                 raise Exception("Claimed input {i} should have a register!")
-        cls.__loaded = inputs
-        cls.__stored = stored
-        # FIXME add C-function ABI
+        cls.__loaded = set(inputs)
+        cls.__stored = set(stored)
+        cls.__loaded.add(cls.stack_pointer)
+        cls.__loaded.add(Register('fp', register='fp', type='x'))
+        cls.__loaded.update([Register(f'x{i}', register=f'x{i}', type='x') for
+                             i in range(16, 30)])
+        cls.__loaded.update([Register(f'q{i}', register='q{i}')
+                             for i in range(8, 16)])
+
+    @classmethod
+    def debug(cls) -> None:
+        regs = [r.name for r in cls.__loaded if r.type == 'x']
+        vecs = [r.name for r in cls.__loaded if r.type == 'v']
+        write(f"// Loaded registers: {', '.join(regs)}")
+        write(f"// Loaded vectors:   {', '.join(vecs)}")
+
+
+Register.stack_pointer = Register('sp', register='sp', type='x')
 
 
 def start_file() -> None:
@@ -119,16 +215,31 @@ def start_file() -> None:
 
 
 def start_function(name: str,
-                   input_assumptions: List[Register],
-                   store_assumptions: List[Register]) -> None:
+                   input_assumptions: Iterable[Register],
+                   store_assumptions: Iterable[Register]) -> None:
     """Start a function of name"""
+    write("\n")
     write(".align 2")
     write(f".global {name}")
     write(f".type {name}, %function")
     Register._prepare(input_assumptions, store_assumptions)
+    Register.debug()
 
 
 def end_function() -> None:
     """End a function"""
     write("ret")
+    write(f"// Cycle count: {Register.cycles}")
     Register.reset()
+
+
+def do_and(name: str, i1: Register, i2: Register) -> Register:
+    r = Register(name)
+    r.and_(i1, i2)
+    return r
+
+
+def do_xor(name: str, i1: Register, i2: Register) -> Register:
+    r = Register(name)
+    r.xor(i1, i2)
+    return r

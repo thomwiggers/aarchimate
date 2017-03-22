@@ -7,6 +7,4 @@ python:
 install:
     - pip install flake8 mypy
 
-script:
-    - mypy --strict library.py
-    - flake8 library.py
+script: test.sh
