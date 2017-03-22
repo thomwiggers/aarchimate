@@ -1,0 +1,12 @@
+language: python
+
+python:
+    - 3.6
+    - nightly
+
+install:
+    - pip install flake8 mypy
+
+script:
+    - mypy --strict library.py
+    - flake8 library.py

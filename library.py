@@ -26,7 +26,7 @@ class Register(object):
     type: str
     offset: Optional[int]
     pointer: Optional['Register']
-    register_name: str
+    register_name: Optional[str]
 
     def __init__(self,
                  name: str,
@@ -52,6 +52,8 @@ class Register(object):
     def load(self) -> None:
         if self not in self.__stored:
             raise Exception("Register {src!s} is not stored!")
+        if self.pointer is None:
+            raise Exception("I don't have a pointer")
         if self.pointer not in self.__loaded:
             raise Exception(
                 "Register {self!s}'s pointer {self.pointer!s} isn't loaded")
@@ -72,6 +74,8 @@ class Register(object):
             raise Exception("Input {i1!s} isn't loaded!")
         if i2 not in self.__loaded:
             raise Exception("Input {i2!s} isn't loaded!")
+        if i1.type != i2.type:
+            raise Exception("Inputs should be of the same type")
 
         reg = self._get_free_name()
         write(f"{operator} {reg}, {i1.register_name}, {i2.register_name}")
@@ -107,6 +111,7 @@ class Register(object):
                 raise Exception("Claimed input {i} should have a register!")
         cls.__loaded = inputs
         cls.__stored = stored
+        # FIXME add C-function ABI
 
 
 def start_file() -> None:
