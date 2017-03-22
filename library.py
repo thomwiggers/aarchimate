@@ -93,6 +93,10 @@ class Register(object):
         if self.register_name is None:
             raise Exception("Huh, I don't have a register")
 
+        if self.latency > 0:
+            write(f"// WARNING: result not ready")
+            self.cycles += self.latency
+
         if self.last_instruction == 'load':
             self.cycles += 1
             write(f"// WARNING: pipeline hazard")
