@@ -30,6 +30,7 @@ class Register(object):
     stack_pointer: 'Register'
     latency: int
     cycles: int = 0
+    max_registers: Dict[str, int] = {'x': 0, 'v': 0}
     last_instruction: str = 'jmp'
 
     def __init__(self,
@@ -43,6 +44,9 @@ class Register(object):
             raise ValueError("invalid type")
         self.register_name = register
         self.type = type
+        if pointer:
+            assert pointer.type == 'x', \
+                "Pointer needs to be a regular register"
         self.pointer = pointer
         self.offset = offset
         self.latency = 0
@@ -50,15 +54,23 @@ class Register(object):
     def __str__(self) -> str:
         return f"Register {self.name}"
 
+    def __repr__(self) -> str:
+        return (f"<Register(name={self.name}, type={self.type}, "
+                f"pointer={self.pointer!r}, offset={self.offset})>")
+
     def __check_registers(self) -> None:
         if len([r for r in self.__loaded if r.type == 'x']) >= 32:
-            raise Exception("Too many regular registers loaded: "
-                            "f{self.__loaded}")
+            raise Exception(f"Too many regular registers loaded: "
+                            f"{self.__loaded}")
         if len([r for r in self.__loaded if r.type == 'v']) >= 32:
-            raise Exception("Too many vector registers loaded: "
-                            "f{self.__loaded}")
+            raise Exception(f"Too many vector registers loaded: "
+                            f"{self.__loaded}")
 
     def load(self) -> None:
+        if self in self.__loaded:
+            write(f"// Not loading {self!s} as already loaded in "
+                  f"{self.register_name}")
+            return
         if self not in self.__stored:
             raise Exception(f"Register {self!s} is not stored!")
         if self.pointer is None:
@@ -83,6 +95,8 @@ class Register(object):
 
     def store(self, pointer: 'Register' = None, offset: int = None) -> None:
         if pointer is not None:
+            assert pointer.type == 'x', \
+                    "Pointer needs to be a regular register"
             self.pointer = pointer
         if offset is not None:
             self.offset = offset
@@ -123,15 +137,19 @@ class Register(object):
         if self not in self.__loaded:
             raise Exception("I'm not even loaded!")
         write(f"// Forgetting {self.name}")
+        self.register_name = None
         self.__loaded.remove(self)
 
-    def and_(self, i1: 'Register', i2: 'Register') -> None:
-        self._operand('and', i1, i2)
+    def and_(self, i1: 'Register', i2: 'Register',
+             drop: List['Register'] = None) -> None:
+        self._operand('and', i1, i2, drop)
 
-    def xor(self, i1: 'Register', i2: 'Register') -> None:
-        self._operand('xor', i1, i2)
+    def xor(self, i1: 'Register', i2: 'Register',
+            drop: List['Register'] = None) -> None:
+        self._operand('eor', i1, i2, drop)
 
-    def _operand(self, operator: str, i1: 'Register', i2: 'Register') -> None:
+    def _operand(self, operator: str, i1: 'Register', i2: 'Register',
+                 drop: List['Register'] = None) -> None:
         if i1 not in self.__loaded:
             raise Exception(f"Input {i1!s} isn't loaded!")
         if i2 not in self.__loaded:
@@ -143,9 +161,19 @@ class Register(object):
             self.cycles += max(i1.latency, i2.latency)
             write(f"// WARNING: latency of {max(i1.latency, i2.latency)}")
 
+        r1 = i1.register_name
+        r2 = i2.register_name
+        if drop is not None:
+            unload(*drop)
+
         reg = self._get_free_name()
+        if i1.type == 'v':
+            reg = vector_to_typed_vector(reg)
+            r1 = vector_to_typed_vector(r1)
+            r2 = vector_to_typed_vector(r2)
+
         write(f"// {self.name} = {i1.name} `{operator}` {i2.name}")
-        write(f"{operator} {reg}, {i1.register_name}, {i2.register_name}")
+        write(f"{operator} {reg}, {r1}, {r2}")
         self.__loaded.add(self)
         self._tick()
         Register.last_instruction = 'op'
@@ -154,12 +182,22 @@ class Register(object):
     def store_register(self) -> None:
         raise Exception("Todo")
 
+    def rename(self, register: 'Register') -> None:
+        self.register_name = register.register_name
+        self.latency = register.latency
+        self.__loaded.add(self)
+        self.__loaded.remove(register)
+
     @classmethod
     def _tick(cls) -> None:
         for r in cls.__loaded:
             if r.latency > 0:
                 r.latency -= 1
         cls.cycles += 1
+        cls.max_registers['x'] = max(cls.max_registers['x'], len(
+            [1 for r in cls.__loaded if r.type == 'x']))
+        cls.max_registers['v'] = max(cls.max_registers['v'], len(
+            [1 for r in cls.__loaded if r.type == 'v']))
 
     def _get_free_name(self) -> str:
         if self.register_name is not None:
@@ -205,8 +243,8 @@ class Register(object):
 
     @classmethod
     def debug(cls) -> None:
-        regs = [r.name for r in cls.__loaded if r.type == 'x']
-        vecs = [r.name for r in cls.__loaded if r.type == 'v']
+        regs = sorted([r.name for r in cls.__loaded if r.type == 'x'])
+        vecs = sorted([r.name for r in cls.__loaded if r.type == 'v'])
         write(f"// Loaded registers: {', '.join(regs)}")
         write(f"// Loaded vectors:   {', '.join(vecs)}")
 
@@ -226,6 +264,8 @@ def start_function(name: str,
     write(".align 2")
     write(f".global {name}")
     write(f".type {name}, %function")
+    write(f"{name}:")
+    write(f"_{name}:")
     Register._prepare(input_assumptions, store_assumptions)
     Register.debug()
 
@@ -234,16 +274,24 @@ def end_function() -> None:
     """End a function"""
     write("ret")
     write(f"// Cycle count: {Register.cycles}")
+    write(f"// Max register pressure: {Register.max_registers}")
     Register.reset()
 
 
-def do_and(name: str, i1: Register, i2: Register) -> Register:
+def do_and(name: str, i1: Register, i2: Register,
+           drop: Iterable[Register] = None) -> Register:
     r = Register(name)
-    r.and_(i1, i2)
+    r.and_(i1, i2, drop)
     return r
 
 
-def do_xor(name: str, i1: Register, i2: Register) -> Register:
+def do_xor(name: str, i1: Register, i2: Register,
+           drop: Iterable[Register] = None) -> Register:
     r = Register(name)
-    r.xor(i1, i2)
+    r.xor(i1, i2, drop)
     return r
+
+
+def unload(*regs: Iterable[Register]) -> None:
+    for r in regs:
+        r.unload()
