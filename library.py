@@ -44,7 +44,7 @@ class Register(object):
             raise ValueError("invalid type")
         self.register_name = register
         self.type = type
-        if pointer:
+        if pointer is not None:
             assert pointer.type == 'x', \
                 "Pointer needs to be a regular register"
         self.pointer = pointer
@@ -144,18 +144,18 @@ class Register(object):
         self.__loaded.remove(self)
 
     def and_(self, i1: 'Register', i2: 'Register',
-             drop: List['Register'] = None) -> None:
+             drop: Iterable['Register'] = None) -> None:
         self._operand('and', i1, i2, drop)
 
     def xor(self, i1: 'Register', i2: 'Register',
-            drop: List['Register'] = None) -> None:
+            drop: Iterable['Register'] = None) -> None:
         self._operand('eor', i1, i2, drop)
 
     def _operand(self, operator: str, i1: 'Register', i2: 'Register',
-                 drop: List['Register'] = None) -> None:
-        if i1 not in self.__loaded:
+                 drop: Iterable['Register'] = None) -> None:
+        if i1 not in self.__loaded or i1.register_name is None:
             raise Exception(f"Input {i1!s} isn't loaded!")
-        if i2 not in self.__loaded:
+        if i2 not in self.__loaded or i2.register_name is None:
             raise Exception(f"Input {i2!s} isn't loaded!")
         if i1.type != i2.type:
             raise Exception("Inputs should be of the same type")
@@ -167,7 +167,7 @@ class Register(object):
         r1 = i1.register_name
         r2 = i2.register_name
         if drop is not None:
-            unload(*drop)
+            unload(*[d for d in drop])
 
         reg = self._get_free_name()
         if i1.type == 'v':
@@ -194,7 +194,6 @@ class Register(object):
         if i1.latency > 0:
             self.cycles += i1.latency
             write(f"// WARNING: latency of {i1.latency}")
-
 
         reg = self._get_free_name()
         write(f"// {self.name} = {i1.name} `{operation}` #{imm}")
@@ -290,7 +289,7 @@ class Register(object):
     def stored(cls) -> Set['Register']:
         return cls.__stored
 
-    def mark_stored(self):
+    def mark_stored(self) -> None:
         self.__stored.add(self)
 
 
@@ -337,6 +336,6 @@ def do_xor(name: str, i1: Register, i2: Register,
     return r
 
 
-def unload(*regs: Iterable[Register]) -> None:
-    for r in regs:
+def unload(*regs: Register) -> None:
+    for r in regs:  # type: Register
         r.unload()
