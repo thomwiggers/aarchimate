@@ -1,3 +1,3 @@
 #!/bin/sh
-mypy --strict library.py
-flake8 library.py
+mypy --strict aarchimate.py
+flake8 aarchimate.py
