@@ -52,7 +52,7 @@ class Register(object):
         self.latency = 0
 
     def __str__(self) -> str:
-        return f"Register {self.name}"
+        return self.name
 
     def __repr__(self) -> str:
         return (f"<Register(name={self.name}, type={self.type}, "
@@ -60,11 +60,14 @@ class Register(object):
 
     def __check_registers(self) -> None:
         if len([r for r in self.__loaded if r.type == 'x']) >= 32:
-            raise Exception(f"Too many regular registers loaded: "
-                            f"{self.__loaded}")
+            regs = ', '.join(map(str, filter(lambda r: r.type == 'x',
+                                             self.__loaded)))
+            raise Exception(f"Too many regular registers loaded: {regs}")
+
         if len([r for r in self.__loaded if r.type == 'v']) >= 32:
-            raise Exception(f"Too many vector registers loaded: "
-                            f"{self.__loaded}")
+            regs = ', '.join(map(str, filter(lambda r: r.type == 'v',
+                                             self.__loaded)))
+            raise Exception(f"Too many vector registers loaded: {regs}")
 
     def load(self) -> None:
         if self in self.__loaded:
@@ -179,6 +182,27 @@ class Register(object):
         Register.last_instruction = 'op'
         self.latency = 1
 
+    def subi(self, i1: 'Register', imm: int) -> None:
+        self._opi("sub", i1, imm)
+
+    def _opi(self, operation: str, i1: 'Register', imm: int) -> None:
+        if i1 not in self.__loaded:
+            raise Exception(f"Input {i1!s} isn't loaded!")
+        if i1.type != 'x':
+            raise ValueError("Only regular registers supported")
+
+        if i1.latency > 0:
+            self.cycles += i1.latency
+            write(f"// WARNING: latency of {i1.latency}")
+
+
+        reg = self._get_free_name()
+        write(f"// {self.name} = {i1.name} `{operation}` #{imm}")
+        write(f"{operation} {reg}, {i1.register_name}, #{imm}")
+
+    def addi(self, i1: 'Register', imm: int) -> None:
+        self._opi('add', i1, imm)
+
     def store_register(self) -> None:
         raise Exception("Todo")
 
@@ -187,6 +211,14 @@ class Register(object):
         self.latency = register.latency
         self.__loaded.add(self)
         self.__loaded.remove(register)
+        if register in self.__stored:
+            if (register.pointer != self.pointer and
+                    register.offset != self.offset):
+                raise Exception(
+                    f"This register ({register}) has already been stored "
+                    "somewhere else")
+            else:
+                self.__stored.add(self)
 
     @classmethod
     def _tick(cls) -> None:
@@ -238,15 +270,28 @@ class Register(object):
         cls.__loaded.add(Register('fp', register='fp', type='x'))
         cls.__loaded.update([Register(f'x{i}', register=f'x{i}', type='x') for
                              i in range(16, 30)])
-        cls.__loaded.update([Register(f'q{i}', register='q{i}')
+        cls.__loaded.update([Register(f'q{i}', register=f'q{i}')
                              for i in range(8, 16)])
 
     @classmethod
     def debug(cls) -> None:
         regs = sorted([r.name for r in cls.__loaded if r.type == 'x'])
         vecs = sorted([r.name for r in cls.__loaded if r.type == 'v'])
+        stored = sorted([r.name for r in cls.__stored if r.type == 'v'])
         write(f"// Loaded registers: {', '.join(regs)}")
         write(f"// Loaded vectors:   {', '.join(vecs)}")
+        write(f"// Stored vectors: {', '.join(stored)}")
+
+    @classmethod
+    def loaded(cls) -> Set['Register']:
+        return cls.__loaded
+
+    @classmethod
+    def stored(cls) -> Set['Register']:
+        return cls.__stored
+
+    def mark_stored(self):
+        self.__stored.add(self)
 
 
 Register.stack_pointer = Register('sp', register='sp', type='x')
