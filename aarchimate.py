@@ -196,6 +196,7 @@ class Register(object):
             write(f"// WARNING: latency of {i1.latency}")
 
         reg = self._get_free_name()
+        self.__loaded.add(self)
         write(f"// {self.name} = {i1.name} `{operation}` #{imm}")
         write(f"{operation} {reg}, {i1.register_name}, #{imm}")
 
@@ -218,6 +219,13 @@ class Register(object):
                     "somewhere else")
             else:
                 self.__stored.add(self)
+
+    def mov(self, register: 'Register') -> None:
+        if register not in self.__loaded or register.register_name is None:
+            raise Exception(f"Input {register} isn't loaded")
+        reg = self._get_free_name()
+        write(f"mov {reg}, {register.register_name}")
+        self.__loaded.add(self)
 
     @classmethod
     def _tick(cls) -> None:
